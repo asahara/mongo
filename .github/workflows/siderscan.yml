@@ -3,7 +3,7 @@ name: Sider Scan Runner
 on:
   push:
     branches:
-      - 
+      - v5.3
 
 jobs:
   scan-job:
