@@ -1,1 +1,69 @@
+name: Sider Scan Runner
 
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  scan-job:
+    runs-on: ubuntu-20.04
+    container:
+      image: sider/sider_scan_runner:latest
+      env:
+        TZ: Asia/Tokyo
+    steps:
+      - uses: actions/checkout@v2
+      - name: Create a sample .siderscan.json if needed
+        run: |
+          if [ ! -e .siderscan.json ]; then
+            cat - << 'JSON' >> .siderscan.json
+          {
+            "report": {
+              "mail": {
+                "to": ["${SIDERSCAN_MAIL_TO}"],
+                "useBuiltInProvider": true
+              },
+              "repositoryName":"mongo"
+            },
+            "scan": {
+              "result": {
+                "url": "https://siderscan-public-result.s3.ap-northeast-1.amazonaws.com/${GITHUB_REPOSITORY}/${GITHUB_RUN_NUMBER}"
+              }
+            },
+            "enableSiderScanTracing": {
+              "userEmail": "aki@siderlabs.com"
+            }
+          }
+          JSON
+            echo 'CREATED .siderscan.json'
+          fi
+      - run: tmpscanjson=$(mktemp) && envsubst < .siderscan.json > "$tmpscanjson" && mv "$tmpscanjson" .siderscan.json
+        env:
+          # Sider Scanの解析結果を必要に応じてお送りします
+          # 受信メールアドレスを設定してください
+          SIDERSCAN_MAIL_TO: scan-dev@siderlabs.com
+      - name: Download the latest radump
+        continue-on-error: true
+        run: |
+          wget --header "Accept: application/vnd.github.v3+json" --header "Authorization: token ${{github.token}}" https://api.github.com/repos/${{github.repository}}/actions/artifacts -O - \
+            | grep -o 'https://[^"]*/zip' \
+            | head -n 1 \
+            | wget -P /tmp --header "Authorization: token ${{github.token}}" --input-file - \
+            && unzip /tmp/zip output.radump -d $GITHUB_WORKSPACE
+      - name: Start analysis
+        run: sider run $GITHUB_WORKSPACE
+      - name: Upload radump
+        uses: actions/upload-artifact@v2
+        with:
+          name: radump
+          path: output.radump
+      - name: Publish to S3 bucket
+        uses: opspresso/action-s3-sync@master
+        env:
+          AWS_ACCESS_KEY_ID: ${{secrets.AWS_ACCESS_KEY_ID_FOR_SIDERSCAN}}
+          AWS_SECRET_ACCESS_KEY: ${{secrets.AWS_SECRET_ACCESS_KEY_FOR_SIDERSCAN}}
+          AWS_REGION: ap-northeast-1
+          FROM_PATH: scan_result
+          DEST_PATH: "s3://siderscan-public-result/${{github.repository}}/${{github.run_number}}/scan_result"
+          OPTIONS: "--acl public-read"
